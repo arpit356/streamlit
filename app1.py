@@ -1,37 +1,42 @@
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 import cv2
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+import tensorflow as tf
 
-# ---------------------------
-# Generate dummy 28x28 data for offline training
-# ---------------------------
+# Load trained model
 @st.cache_resource
-def train_model():
-    np.random.seed(42)
-    X = np.random.randint(0, 256, (2000, 28*28))
-    y = np.random.randint(0, 10, 2000)
+def load_model():
+    return tf.keras.models.load_model('mnist_cnn_model.h5')
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
+model = load_model()
 
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
-    clf.fit(X_train, y_train)
-    acc = accuracy_score(y_test, clf.predict(X_test))
-    return clf, acc
+st.title("Handwritten Digit Recognition with Background Black and Digit White")
 
-model, acc = train_model()
+def preprocess_image(img):
+    # Convert to grayscale (if not already)
+    img_gray = img.convert('L') if img.mode != 'L' else img
+    img_array = np.array(img_gray)
+    
+    # Threshold to binary
+    _, binary_img = cv2.threshold(img_array, 127, 255, cv2.THRESH_BINARY)
+    
+    # Invert colors: make background black, digit white
+    inverted_img = cv2.bitwise_not(binary_img)
+    
+    # Resize to model input size 28x28
+    resized_img = cv2.resize(inverted_img, (28, 28), interpolation=cv2.INTER_AREA)
+    
+    # Normalize to [0,1]
+    norm_img = resized_img / 255.0
+    return norm_img
 
-# ---------------------------
-# Page UI
-# ---------------------------
-st.set_page_config(page_title="Handwritten Digit Recognition 28x28", page_icon="✏️")
-st.title("📷 Handwritten Digit Recognition (28×28, Offline)")
-st.write(f"Model trained with RandomForest. Accuracy (synthetic data): **{acc*100:.2f}%**")
+def predict_digit(img_array):
+    input_img = img_array.reshape(1, 28, 28, 1).astype('float32')
+    prediction = model.predict(input_img)
+    predicted_digit = np.argmax(prediction)
+    confidence = np.max(prediction)
+    return predicted_digit, confidence
 
 # ---------------------------
 # Input Selection
@@ -39,51 +44,33 @@ st.write(f"Model trained with RandomForest. Accuracy (synthetic data): **{acc*10
 st.subheader("Choose an input method:")
 method = st.radio("📥 Input Method", ["Camera", "Upload File"], horizontal=True)
 
-file = None
+image = None
 if method == "Camera":
-    file = st.camera_input("Take a photo of your digit")
+    img_file_buffer = st.camera_input("Capture your handwritten digit")
+    if img_file_buffer is not None:
+        image = Image.open(img_file_buffer)
 elif method == "Upload File":
-    file = st.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
+    uploaded_file = st.file_uploader("Upload image", type=["png", "jpg", "jpeg"])
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
 
 # ---------------------------
-# Process Image & Predict
+# Process and Predict
 # ---------------------------
-if file is not None:
-    # Open image
-    img_pil = Image.open(file).convert("L")  # grayscale
-    img_np = np.array(img_pil)
-
-    # ----- Segmentation -----
-    # Blur + Threshold
-    blur = cv2.GaussianBlur(img_np, (5, 5), 0)
-    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-    # Find contours
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if contours:
-        # Find largest contour (digit)
-        c = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(c)
-
-        # Crop to bounding box
-        digit_crop = img_np[y:y+h, x:x+w]
-    else:
-        digit_crop = img_np  # fallback if no contour found
-
-    # Resize to 28x28
-    digit_pil = Image.fromarray(digit_crop)
-    digit_pil = ImageOps.invert(digit_pil)  # white digit on black
-    digit_pil = digit_pil.resize((28, 28), Image.LANCZOS)
-
-    # Prepare for model
-    img_array = np.array(digit_pil).reshape(1, -1)
-    img_array = img_array / 255.0 * 255
-
-    # Show processed
-    st.image(digit_pil, caption="🖼 Segmented Digit (28×28)", width=150)
-
+if image is not None:
+    processed_img = preprocess_image(image)
+    
+    # Display processed image (background black, digit white)
+    st.image(processed_img, caption="Processed Image (Background=Black, Digit=White)", width=150, clamp=True)
+    
     # Predict
-    if st.button("🔍 Predict"):
-        pred = model.predict(img_array)[0]
-        st.success(f"✅ Predicted Digit: **{pred}**")
+    digit, conf = predict_digit(processed_img)
+    st.markdown(f"### Predicted Digit: {digit}")
+    st.markdown(f"Confidence: {conf:.2f}")
+
+# Tips
+st.markdown("""
+#### Tips:
+- Write the digit clearly with a dark pen on white paper.
+- Hold it steady and centered while capturing or upload a clear image.
+""")
